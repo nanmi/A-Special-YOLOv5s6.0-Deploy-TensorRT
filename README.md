@@ -31,14 +31,11 @@ Make sure you had install dependencies list above
 
 ```bash
 # clone project and submodule
-git clone {this repo}
+git clone {this repo} --recursive
 
 cd {this repo}/
 
-git clone https://github.com/ultralytics/yolov5.git
 ```
-
-checkpoint is pretrained model from https://github.com/ultralytics/yolov5/releases
 
 # Modify yolov5
 
@@ -72,12 +69,11 @@ in `yolov5/models/yolo.py` line 54,add this code
         return x if self.training else (torch.cat(z, 1), x)
 ```
 
-in `yolov5/export.py` line 72 add this code 
+in `yolov5/export.py` before `torch.onnx.export` add this code 
 
 ```python
 model.model[-1].onnx_dynamic = True
 ```
-
 
 
 ### export onnx model
@@ -94,85 +90,23 @@ python -m onnxsim yolov5s.onnx yolov5s-sim.onnx
 
 ![](asset/yolov5s-6.0-simplifier.png)
 
-# Add yolo layer custom op
+currently this mode has one input and three outputs(output, 327, 328)
 
-### decode
 
-```shell
-cd {this repo}
-protoc --decode onnx.ModelProto onnx.proto3 < yolov5s-sim.onnx > yolov5s.txt
-vim yolov5s.txt
-```
+# Add yolo layer custom op(post process)
+use this repo's script `add_custom_yolo_op.py`
 
 ### Add custom op
 
-at this line add this code
-
-![](asset/protobuf-onnx.png)
-
 ```shell
-node {
-    input: "output"
-    input: "327"
-    input: "328"
-    output: "output0"
-    name: "YoloLayer_TRT_0"
-    op_type: "YoloLayer_TRT"
-    attribute {
-      name: "name"
-      s: "YoloLayer_TRT"
-      type: STRING
-    }
-    attribute {
-      name: "namespace"
-      type: STRING
-    }
-    attribute {
-      name: "version"
-      s: "1"
-      type: STRING
-    }
-  }
-```
-
-and modify output
-
-![](asset/protobuf-onnx1.png)
-
-```shell
-  output {
-    name: "output0"
-    type {
-      tensor_type {
-        elem_type: 1
-        shape {
-          dim {
-            dim_value: 6001
-          }
-          dim {
-            dim_value: 1
-          }
-          dim {
-            dim_value: 1
-          }
-        }
-      }
-    }
-  }
-
-```
-
-save txt and exit
-
-### encode
-
-```shell
-protoc --encode onnx.ModelProto onnx.proto3 < yolov5s.txt > yolov5s-yolo-op.onnx
+cd script
+python add_custom_yolo_op.py
 ```
 
 show yolov5s-yolo-op.onnx
 
 ![](asset/yolo-layer.png)
+
 
 # Build yolo layer tensorrt plugin
 

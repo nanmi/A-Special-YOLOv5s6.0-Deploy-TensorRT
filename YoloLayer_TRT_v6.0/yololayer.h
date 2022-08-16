@@ -3,6 +3,8 @@
 
 #include <vector>
 #include <string>
+#include <assert.h>
+#include <iostream>
 #include <NvInfer.h>
 #include "macros.h"
 

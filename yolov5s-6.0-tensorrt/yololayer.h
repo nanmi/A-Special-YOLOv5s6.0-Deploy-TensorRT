@@ -3,10 +3,23 @@
 
 #include <vector>
 #include <string>
+#include <assert.h>
+#include <iostream>
 #include <NvInfer.h>
 #include "macros.h"
-#define TRT_NOEXCEPT noexcept
-#define TRT_CONST_ENQUEUE const
+
+
+#ifndef CUDA_CHECK
+#define CUDA_CHECK(callstr)\
+    {\
+        cudaError_t error_code = callstr;\
+        if (error_code != cudaSuccess) {\
+            std::cerr << "CUDA error " << error_code << " at " << __FILE__ << ":" << __LINE__;\
+            assert(0);\
+        }\
+    }
+#endif  // CUDA_CHECK
+
 namespace Yolo
 {
     static constexpr int CHECK_COUNT = 3;
@@ -45,6 +58,7 @@ namespace Yolo
         INPUT_H / 8,
         {10.0f,13.0f, 16.0f,30.0f, 33.0f,23.0f}
     };
+
 }
 
 namespace nvinfer1

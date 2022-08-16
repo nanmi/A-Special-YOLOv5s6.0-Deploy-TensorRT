@@ -1,8 +1,17 @@
-#include <assert.h>
-#include <vector>
-#include <iostream>
+
 #include "yololayer.h"
-#include "cuda_utils.h"
+
+
+#ifndef CUDA_CHECK
+#define CUDA_CHECK(callstr)\
+    {\
+        cudaError_t error_code = callstr;\
+        if (error_code != cudaSuccess) {\
+            std::cerr << "CUDA error " << error_code << " at " << __FILE__ << ":" << __LINE__;\
+            assert(0);\
+        }\
+    }
+#endif  // CUDA_CHECK
 
 namespace Tn
 {
@@ -245,7 +254,6 @@ namespace nvinfer1
             numElem = yolo.width * yolo.height * batchSize;
             if (numElem < mThreadCount) mThreadCount = numElem;
 
-            //printf("Net: %d  %d \n", mYoloV5NetWidth, mYoloV5NetHeight);
             CalDetection << < (numElem + mThreadCount - 1) / mThreadCount, mThreadCount, 0, stream >> >
                 (inputs[i], output, numElem, mYoloV5NetWidth, mYoloV5NetHeight, mMaxOutObject, yolo.width, yolo.height, (float*)mAnchor[i], mClassCount, outputElem);
         }
@@ -286,18 +294,8 @@ namespace nvinfer1
 
     IPluginV2IOExt* YoloPluginCreator::createPlugin(const char* name, const PluginFieldCollection* fc) TRT_NOEXCEPT
     {
-        // assert(fc->nbFields == 2);
-        // assert(strcmp(fc->fields[0].name, "netinfo") == 0);
-        // assert(strcmp(fc->fields[1].name, "kernels") == 0);
-        // int *p_netinfo = (int*)(fc->fields[0].data);
-        int class_count = 80;//p_netinfo[0];
-        int input_w = 640;//p_netinfo[1];
-        int input_h = 640;//p_netinfo[2];
-        int max_output_object_count = 1000;//p_netinfo[3];
-        // std::vector<Yolo::YoloKernel> anchors(3);
         std::vector<Yolo::YoloKernel> kernels{Yolo::yolo3, Yolo::yolo2, Yolo::yolo1};
-        // memcpy(&kernels[0], fc->fields[1].data, kernels.size() * sizeof(Yolo::YoloKernel));
-        YoloLayerPlugin* obj = new YoloLayerPlugin(class_count, input_w, input_h, max_output_object_count, kernels);
+        YoloLayerPlugin* obj = new YoloLayerPlugin(Yolo::CLASS_NUM, Yolo::INPUT_W, Yolo::INPUT_H, Yolo::MAX_OUTPUT_BBOX_COUNT, kernels);
         obj->setPluginNamespace(mNamespace.c_str());
         return obj;
     }

@@ -1,12 +1,10 @@
 #include <iostream>
 #include <chrono>
 #include <cmath>
-#include "cuda_utils.h"
+#include <dirent.h>
+#include <opencv2/opencv.hpp>
 #include "logging.h"
-#include "common.hpp"
-#include "utils.h"
-#include "preprocess.h"
-
+#include "yololayer.h"
 
 #define DEVICE 0  // GPU id
 #define NMS_THRESH 0.45
@@ -36,6 +34,122 @@ std::string categories[CLASS_NUM] = {"person", "bicycle", "car", "motorcycle", "
 
 
 
+static inline cv::Mat preprocess_img(cv::Mat& img, int input_w, int input_h) {
+    int w, h, x, y;
+    float r_w = input_w / (img.cols*1.0);
+    float r_h = input_h / (img.rows*1.0);
+    if (r_h > r_w) {
+        w = input_w;
+        h = r_w * img.rows;
+        x = 0;
+        y = (input_h - h) / 2;
+    } else {
+        w = r_h * img.cols;
+        h = input_h;
+        x = (input_w - w) / 2;
+        y = 0;
+    }
+    cv::Mat re(h, w, CV_8UC3);
+    cv::resize(img, re, re.size(), 0, 0, cv::INTER_LINEAR);
+    cv::Mat out(input_h, input_w, CV_8UC3, cv::Scalar(128, 128, 128));
+    re.copyTo(out(cv::Rect(x, y, re.cols, re.rows)));
+    return out;
+}
+
+static inline int read_files_in_dir(const char *p_dir_name, std::vector<std::string> &file_names) {
+    DIR *p_dir = opendir(p_dir_name);
+    if (p_dir == nullptr) {
+        return -1;
+    }
+
+    struct dirent* p_file = nullptr;
+    while ((p_file = readdir(p_dir)) != nullptr) {
+        if (strcmp(p_file->d_name, ".") != 0 &&
+            strcmp(p_file->d_name, "..") != 0) {
+            //std::string cur_file_name(p_dir_name);
+            //cur_file_name += "/";
+            //cur_file_name += p_file->d_name;
+            std::string cur_file_name(p_file->d_name);
+            file_names.push_back(cur_file_name);
+        }
+    }
+
+    closedir(p_dir);
+    return 0;
+}
+
+cv::Rect get_rect(cv::Mat& img, float bbox[4]) {
+    float l, r, t, b;
+    float r_w = Yolo::INPUT_W / (img.cols * 1.0);
+    float r_h = Yolo::INPUT_H / (img.rows * 1.0);
+    if (r_h > r_w) {
+        l = bbox[0] - bbox[2] / 2.f;
+        r = bbox[0] + bbox[2] / 2.f;
+        t = bbox[1] - bbox[3] / 2.f - (Yolo::INPUT_H - r_w * img.rows) / 2;
+        b = bbox[1] + bbox[3] / 2.f - (Yolo::INPUT_H - r_w * img.rows) / 2;
+        l = l / r_w;
+        r = r / r_w;
+        t = t / r_w;
+        b = b / r_w;
+    } else {
+        l = bbox[0] - bbox[2] / 2.f - (Yolo::INPUT_W - r_h * img.cols) / 2;
+        r = bbox[0] + bbox[2] / 2.f - (Yolo::INPUT_W - r_h * img.cols) / 2;
+        t = bbox[1] - bbox[3] / 2.f;
+        b = bbox[1] + bbox[3] / 2.f;
+        l = l / r_h;
+        r = r / r_h;
+        t = t / r_h;
+        b = b / r_h;
+    }
+    return cv::Rect(round(l), round(t), round(r - l), round(b - t));
+}
+
+float iou(float lbox[4], float rbox[4]) {
+    float interBox[] = {
+        (std::max)(lbox[0] - lbox[2] / 2.f , rbox[0] - rbox[2] / 2.f), //left
+        (std::min)(lbox[0] + lbox[2] / 2.f , rbox[0] + rbox[2] / 2.f), //right
+        (std::max)(lbox[1] - lbox[3] / 2.f , rbox[1] - rbox[3] / 2.f), //top
+        (std::min)(lbox[1] + lbox[3] / 2.f , rbox[1] + rbox[3] / 2.f), //bottom
+    };
+
+    if (interBox[2] > interBox[3] || interBox[0] > interBox[1])
+        return 0.0f;
+
+    float interBoxS = (interBox[1] - interBox[0])*(interBox[3] - interBox[2]);
+    return interBoxS / (lbox[2] * lbox[3] + rbox[2] * rbox[3] - interBoxS);
+}
+
+bool cmp(const Yolo::Detection& a, const Yolo::Detection& b) {
+    return a.conf > b.conf;
+}
+
+void nms(std::vector<Yolo::Detection>& res, float *output, float conf_thresh, float nms_thresh = 0.5) {
+    int det_size = sizeof(Yolo::Detection) / sizeof(float);
+    std::map<float, std::vector<Yolo::Detection>> m;
+    for (int i = 0; i < output[0] && i < Yolo::MAX_OUTPUT_BBOX_COUNT; i++) {
+        if (output[1 + det_size * i + 4] <= conf_thresh) continue;
+        Yolo::Detection det;
+        memcpy(&det, &output[1 + det_size * i], det_size * sizeof(float));
+        if (m.count(det.class_id) == 0) m.emplace(det.class_id, std::vector<Yolo::Detection>());
+        m[det.class_id].push_back(det);
+    }
+    for (auto it = m.begin(); it != m.end(); it++) {
+        //std::cout << it->second[0].class_id << " --- " << std::endl;
+        auto& dets = it->second;
+        std::sort(dets.begin(), dets.end(), cmp);
+        for (size_t m = 0; m < dets.size(); ++m) {
+            auto& item = dets[m];
+            res.push_back(item);
+            for (size_t n = m + 1; n < dets.size(); ++n) {
+                if (iou(item.bbox, dets[n].bbox) > nms_thresh) {
+                    dets.erase(dets.begin() + n);
+                    --n;
+                }
+            }
+        }
+    }
+}
+
 void doInference(IExecutionContext& context, cudaStream_t& stream, void **buffers, float* input, float* output, int batchSize) {
     // DMA input batch data to device, infer on the batch asynchronously, and DMA output back to host
     CUDA_CHECK(cudaMemcpyAsync(buffers[0], input, batchSize * 3 * INPUT_H * INPUT_W * sizeof(float), cudaMemcpyHostToDevice, stream));
@@ -62,6 +176,7 @@ int main(int argc, char** argv) {
     std::string engine_name = "";
     bool is_p6 = false;
     float gd = 0.0f, gw = 0.0f;
+
     std::string img_dir;
     if (!parse_args(argc, argv, wts_name, engine_name, is_p6, gd, gw, img_dir)) {
         std::cerr << "arguments not right!" << std::endl;
@@ -75,6 +190,7 @@ int main(int argc, char** argv) {
         std::cerr << "read " << engine_name << " error!" << std::endl;
         return -1;
     }
+
     char *trtModelStream = nullptr;
     size_t size = 0;
     file.seekg(0, file.end);
@@ -105,12 +221,14 @@ int main(int argc, char** argv) {
     delete[] trtModelStream;
     assert(engine->getNbBindings() == 2);
     void* buffers[2];
+
     // In order to bind the buffers, we need to know the names of the input and output tensors.
     // Note that indices are guaranteed to be less than IEngine::getNbBindings()
     const int inputIndex = engine->getBindingIndex(INPUT_BLOB_NAME);
     const int outputIndex = engine->getBindingIndex(OUTPUT_BLOB_NAME);
     assert(inputIndex == 0);
     assert(outputIndex == 1);
+
     // Create GPU buffers on device
     CUDA_CHECK(cudaMalloc(&buffers[inputIndex], BATCH_SIZE * 3 * INPUT_H * INPUT_W * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&buffers[outputIndex], BATCH_SIZE * OUTPUT_SIZE * sizeof(float)));

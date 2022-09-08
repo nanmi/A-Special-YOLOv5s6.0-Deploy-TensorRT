@@ -1,5 +1,6 @@
 #include <iostream>
 #include <chrono>
+#include <fstream>
 #include <cmath>
 #include <dirent.h>
 #include <opencv2/opencv.hpp>
@@ -21,6 +22,7 @@ const char* INPUT_BLOB_NAME = "images";
 const char* OUTPUT_BLOB_NAME = "output0";
 static Logger gLogger;
 
+using namespace nvinfer1;
 
 std::string categories[CLASS_NUM] = {"person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic_light",
         "fire_hydrant", "stop_sign", "parking_meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow",
@@ -150,12 +152,13 @@ void nms(std::vector<Yolo::Detection>& res, float *output, float conf_thresh, fl
     }
 }
 
-void doInference(IExecutionContext& context, cudaStream_t& stream, void **buffers, float* input, float* output, int batchSize) {
+int doInference(IExecutionContext& context, cudaStream_t& stream, void **buffers, float* input, float* output, int batchSize) {
     // DMA input batch data to device, infer on the batch asynchronously, and DMA output back to host
     CUDA_CHECK(cudaMemcpyAsync(buffers[0], input, batchSize * 3 * INPUT_H * INPUT_W * sizeof(float), cudaMemcpyHostToDevice, stream));
     context.enqueue(batchSize, buffers, stream, nullptr);
     CUDA_CHECK(cudaMemcpyAsync(output, buffers[1], batchSize * OUTPUT_SIZE * sizeof(float), cudaMemcpyDeviceToHost, stream));
     cudaStreamSynchronize(stream);
+    return 0;
 }
 
 bool parse_args(int argc, char** argv, std::string& wts, std::string& engine, bool& is_p6, float& gd, float& gw, std::string& img_dir) {
@@ -289,9 +292,9 @@ int main(int argc, char** argv) {
     CUDA_CHECK(cudaFree(buffers[inputIndex]));
     CUDA_CHECK(cudaFree(buffers[outputIndex]));
     // Destroy the engine
-    context->destroy();
-    engine->destroy();
-    runtime->destroy();
+    cudaFreeHost(context);
+    cudaFreeHost(engine);
+    cudaFreeHost(runtime);
 
 
     // Print histogram of the output distribution
